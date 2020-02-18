@@ -1,13 +1,18 @@
-# Running the server
+# Checkout subscription with add-ons
 
-We included several RESTful server that each implement the same endpoints and logic.
-Pick the language you are most comfortable in and follow the instructions in the directory on how to run.
+A [Go](https://golang.org) implementation
 
-# Supported languages
+## Requirements
 
-* [JavaScript (Node)](node/README.md)
-* [Python (Flask)](python/README.md)
-* [Ruby (Sinatra)](ruby/README.md)
-* [PHP (Slim)](php/README.md)
-* [Java (Spark)](java/README.md)
-* [Go (Standard Library)](go/README.md)
+- Go
+- [Configured .env file](../README.md)
+
+## How to run
+
+1. Run the application
+
+```
+go run server.go
+```
+
+2. Go to `localhost:4242` to see the demo

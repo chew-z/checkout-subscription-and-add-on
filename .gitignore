@@ -23,3 +23,7 @@ target/
 .classpath
 .factorypath
 .project
+
+server/.env
+server/bin/**
+go.sum
