@@ -1,14 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 
+	"github.com/gin-contrib/static"
+	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/stripe/stripe-go"
 	"github.com/stripe/stripe-go/checkout/session"
@@ -22,29 +22,25 @@ func main() {
 	}
 
 	stripe.Key = os.Getenv("STRIPE_SECRET_KEY")
-
-	http.Handle("/", http.FileServer(http.Dir(os.Getenv("STATIC_DIR"))))
-	http.HandleFunc("/checkout-session", handleCheckoutSession)
-	http.HandleFunc("/create-checkout-session", handleCreateCheckoutSession)
-	http.HandleFunc("/public-key", handlePublicKey)
-	http.HandleFunc("/webhook", handleWebhook)
+	router := gin.Default()
+	router.Use(static.Serve("/", static.LocalFile(os.Getenv("STATIC_DIR"), false)))
+	router.POST("/create-checkout-session", handleCreateCheckoutSession)
+	router.GET("/checkout-session", handleCheckoutSession)
+	router.GET("/public-key", handlePublicKey)
+	router.POST("/webhook", handleWebhook)
 
 	addr := ":8080"
 	log.Printf("Listening on %s ...", addr)
-	log.Fatal(http.ListenAndServe(addr, nil))
+	router.Run(addr)
 }
 
-func handleCreateCheckoutSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-		return
-	}
+func handleCreateCheckoutSession(c *gin.Context) {
 	var req struct {
 		IsBuyingSticker bool `json:"isBuyingSticker"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
 		log.Printf("json.NewDecoder.Decode: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -75,40 +71,24 @@ func handleCreateCheckoutSession(w http.ResponseWriter, r *http.Request) {
 
 	session, err := session.New(params)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 		log.Printf("session.New: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	writeJSON(w, struct {
-		CheckoutSessionID string `json:"checkoutSessionId"`
-	}{
-		CheckoutSessionID: session.ID,
-	})
+	c.JSON(http.StatusOK, gin.H{"checkoutSessionId": session.ID})
 }
 
-func handlePublicKey(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-		return
-	}
-	writeJSON(w, struct {
-		PublicKey string `json:"publicKey"`
-	}{
-		PublicKey: os.Getenv("STRIPE_PUBLISHABLE_KEY"),
-	})
+func handlePublicKey(c *gin.Context) {
+	publicKey := os.Getenv("STRIPE_PUBLISHABLE_KEY")
+	c.JSON(http.StatusOK, gin.H{"publicKey": publicKey})
 }
 
-func handleCheckoutSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-		return
-	}
+func handleCheckoutSession(c *gin.Context) {
 
-	id := r.FormValue("sessionId")
-
+	id := c.PostForm("sessionId")
 	if id == "" {
-		log.Println("CheckoutSession ID is missing from URL", r.URL.Query())
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		log.Printf("CheckoutSession ID is missing from URL %s", c.Request.RequestURI)
+		c.JSON(http.StatusBadRequest, gin.H{"error": http.StatusText(http.StatusBadRequest)})
 		return
 	}
 
@@ -118,33 +98,25 @@ func handleCheckoutSession(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("An error happened when getting the CheckoutSession %q from Stripe: %v", id, err)
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		c.JSON(http.StatusBadRequest, gin.H{"error": http.StatusText(http.StatusBadRequest)})
 		return
 	}
 
-	writeJSON(w, struct {
-		CheckoutSession *stripe.CheckoutSession `json:"checkoutSession"`
-	}{
-		CheckoutSession: session,
-	})
+	c.JSON(http.StatusOK, gin.H{"CheckoutSession": session})
 }
 
-func handleWebhook(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-		return
-	}
-	b, err := ioutil.ReadAll(r.Body)
+func handleWebhook(c *gin.Context) {
+	b, err := ioutil.ReadAll(c.Request.Body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
 		log.Printf("ioutil.ReadAll: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	event, err := webhook.ConstructEvent(b, r.Header.Get("Stripe-Signature"), os.Getenv("STRIPE_WEBHOOK_SECRET"))
+	event, err := webhook.ConstructEvent(b, c.Request.Header.Get("Stripe-Signature"), os.Getenv("STRIPE_WEBHOOK_SECRET"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		log.Printf("webhook.ConstructEvent: %v", err)
+		log.Printf("webhook.ConstructEvent: %s", err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -163,19 +135,5 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 		log.Printf("🔔 Customer is subscribed and bought an e-book! Send the e-book to %s", cust.Email)
 	} else {
 		log.Printf("🔔 Customer is subscribed but did not buy an e-book.")
-	}
-}
-
-func writeJSON(w http.ResponseWriter, v interface{}) {
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(v); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		log.Printf("json.NewEncoder.Encode: %v", err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if _, err := io.Copy(w, &buf); err != nil {
-		log.Printf("io.Copy: %v", err)
-		return
 	}
 }
